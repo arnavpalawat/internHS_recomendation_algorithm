@@ -1,17 +1,19 @@
+import falcon
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import firestore
 import nltk
 from sklearn.feature_extraction.text import TfidfVectorizer
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
+
+from firebase_api_key import credential
 from jobs import Jobs
 
 # Download the punkt tokenizer for NLTK
 nltk.download('punkt')
 
 # Initialize Firebase
-cred = credentials.Certificate("intern-b54ae-firebase-adminsdk-f0340-e5dcc26685.json")
+cred = credential
 firebase_admin.initialize_app(cred)
 
 # Initialize Firestore
@@ -37,8 +39,10 @@ job_dicts = [{'id': job.id, 'description': job.description, 'title': job.title} 
 
 # Convert the list of dictionaries into a DataFrame
 df = pd.DataFrame(job_dicts)
+
 # Create a TfidfVectorizer
 tfidf = TfidfVectorizer()
+
 # Fit and transform the data to a tfidf matrix
 tfidf_matrix = tfidf.fit_transform(df['description'])
 
@@ -46,25 +50,37 @@ cosine_similarity = linear_kernel(tfidf_matrix, tfidf_matrix)
 
 indices = pd.Series(df.index, index=df['title']).drop_duplicates()
 
+def get_recommendations(recommend_titles, avoid_titles, cosine_sim=cosine_similarity, num_recommend=10):
+    # Get indices for recommendation and avoidance
+    recommend_indices = indices[recommend_titles]
+    avoid_indices = indices[avoid_titles]
 
-def get_recommendations(title, cosine_sim=cosine_similarity, num_recommend=10):
-    idx = indices[title]
+    # Calculate similarity scores for recommended jobs
+    sim_scores = []
+    for idx in recommend_indices:
+        sim_scores.extend(list(enumerate(cosine_sim[idx])))
 
-    # Get the pairwsie similarity scores of all jobs with that job
-    sim_scores = list(enumerate(cosine_sim[idx]))
+    # Average the similarity scores
+    sim_scores = pd.DataFrame(sim_scores, columns=['index', 'score'])
+    sim_scores = sim_scores.groupby('index').mean().reset_index()
 
     # Sort the jobs based on the similarity scores
-    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
+    sim_scores = sim_scores.sort_values(by='score', ascending=False)
 
-    # Get the scores of the 10 most similar jobs
-    top_similar = sim_scores[1:num_recommend + 1]
+    # Remove jobs that are similar to those in avoid_titles
+    for idx in avoid_indices:
+        sim_scores = sim_scores[sim_scores['index'] != idx]
+
+    # Get the scores of the most similar jobs
+    top_similar = sim_scores.head(num_recommend)
 
     # Get the job indices
-    movie_indices = [i[0] for i in top_similar]
+    job_indices = top_similar['index'].values
 
-    # Return the top 10 most similar jobs
-    return df['id'].iloc[movie_indices]
-
+    # Return the top most similar jobs
+    return df['id'].iloc[job_indices]
 
 if __name__ == "__main__":
-    print(get_recommendations("Security Management Internship Summer 2024"))
+    recommend_titles = ["Security Management Internship Summer 2024"]
+    avoid_titles = ["Systems Integration Intern (Fall 2024)"]
+    print(get_recommendations(recommend_titles, avoid_titles))
